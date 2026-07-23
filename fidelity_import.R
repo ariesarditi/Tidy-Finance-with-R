@@ -3,7 +3,7 @@
 # ============================================================================
 # Purpose: Parse a Fidelity "Positions" CSV export, classify accounts by tax
 #          treatment, flag/handle missing cost-basis & purchase-date data,
-#          and merge with live/delayed quotes for analysis.
+#          and merge with live or delayed quotes for analysis.
 #
 # Fidelity export instructions:
 #   Accounts & Trade > Positions > (download/export icon, usually top right)
@@ -18,8 +18,14 @@
 # ============================================================================
 
 library(tidyverse)
+library(tidyfinance)
 library(janitor)   # clean_names() for messy Fidelity headers
-library(tidyquant) # live/delayed quotes
+library(tcltk)
+library(plotly)
+
+source("functions.R")
+
+
 
 # ----------------------------------------------------------------------------
 # 1. CONFIG: Account number -> tax treatment mapping
@@ -71,6 +77,7 @@ read_fidelity_positions <- function(filepath) {
     # blank/placeholder rows (e.g. "Pending Activity")
     filter(
       !is.na(account_number),
+      !is.na(account_name), # only consider rows with an account name
       !str_detect(str_to_upper(coalesce(description, "")), "PENDING ACTIVITY"),
       !str_detect(str_to_upper(coalesce(symbol, "")), "^TOTAL")
     ) %>%
@@ -223,7 +230,8 @@ add_live_quotes <- function(df) {
     pull(symbol)
 
   quotes <- tryCatch({
-    tq_get(symbols, get = "stock.prices", from = Sys.Date() - 5) %>%
+#    tq_get(symbols, get = "stock.prices", from = Sys.Date() - 5) %>%
+    download_data("Stock Prices", symbols = symbols, start_date = Sys.Date(), end_date = Sys.Date()) %>%
       group_by(symbol) %>%
       slice_max(date, n = 1) %>%
       ungroup() %>%
@@ -323,7 +331,18 @@ summarize_by_account <- function(df) {
 # RUN: Read in the fidelity positions file file
 # ============================================================================
 
-positions <- read_fidelity_positions(file.choose()) %>%
+filepath <- tk_choose.files(
+  default = file.path(path.expand("~"), "Downloads", "", "Portfolio*.csv"),
+  caption = "Select the Fidelity csv data file",
+  multi = FALSE,
+  filters = matrix(c("CSV files", ".csv", "", "*"), 2, 2, byrow = TRUE)
+)
+
+if (length(filepath) == 0) {
+  stop("No file selected.")
+}
+
+positions <- read_fidelity_positions(filepath) %>%
   flag_missing_data()
 
 # If you have a lot-level export with purchase dates, point to it here:
@@ -341,4 +360,8 @@ print(summarize_by_account(positions))
 positions <- add_live_quotes(positions)
 
 # Save cleaned data for downstream analysis
-write_csv(positions, "positions_cleaned.csv")
+cleanfilepath <- dirname(filepath)
+write_csv(positions, file.path(cleanfilepath, "positions_cleaned.csv"))
+
+# Show allocation of all securities
+show_allocation()
